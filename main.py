@@ -1,60 +1,43 @@
 import argparse
-import re
 import urllib
-from urllib.parse import urlparse
-from urllib.parse import urljoin
-from urllib.parse import urlsplit
-from urllib.parse import urlunsplit
+from urllib.parse import urlparse, urljoin, urlsplit, urlunsplit
 import urllib.request
 from bs4 import BeautifulSoup
 import sqlite3 as lite
+from multiprocessing import Process, Lock, Queue
+import time
 
 parser = argparse.ArgumentParser(description='Scan ze webz')
 parser.add_argument('URLs', metavar='U', type=str, nargs='+',
                    help='URLS to start off with')
 
-#keywordregex = re.compile('<meta\sname=["\']keywords["\']\scontent=["\'](.*?)["\']\s/>')
-#linkregex = re.compile('<a\s*href=[\'|"](.*?)[\'"].*?>')
+WORKER_THREADS = 10
 
-def main():
-    print ("Bot starting!")
-
-    args = parser.parse_args()
-
-    print (args.URLs)
-
-    urls = []
-    urls.extend(args.URLs)
-
-    con = None
-    cursor = None
-    try:
-        con = lite.connect('test.db')
-        cursor=con.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS Data(Id INT PRIMARY KEY, Url TEXT UNIQUE ON CONFLICT IGNORE)")
-        while len(urls) != 0:
-            url = urls.pop()
-            print ("Processing: " + url, end='\n')
+def process_url(lock, url_queue, t_num):
+    connection = lite.connect('test.db')
+    while True:
+        print ("Thread: ", t_num)
+        if not url_queue.empty():
+            url = url_queue.get()
+            lock.acquire()
+            cursor = connection.cursor()
+            cursor.execute('insert into Data values(NULL,?)', (url,))
+            connection.commit()
+            lock.release()
             for u in parse_urls(url):
                 # in mem or in database? depth first or??
+                lock.acquire()
                 cursor.execute("SELECT count(*) FROM Data WHERE Url = ?", (u,))
                 data=cursor.fetchone()[0]
                 if data==0:
-                    #print('There is no component named %s'%name)
-                    urls.append(u)
-                    cursor.execute('insert into Data values(NULL,?)', (u,))
-            con.commit()
-
-    except lite.Error as e:
-        print ("Error %s:" % e.args[0])
-        sys.exit(1)
-
-    finally:
-        if con:
-            con.close()
-    print ("No more URLs :(")
+                    url_queue.put(u)
+                lock.release()
+        else:
+            print ("No more URLs :( ", t_num)
+            #time.sleep(1)
 
 def parse_urls(url):
+    print("URL: ", url)
     try:
         with urllib.request.urlopen(url) as response:
             html = response.read()
@@ -67,19 +50,14 @@ def parse_urls(url):
                     new_url = ""
                     if link.startswith("http"):
                         new_url = link
-                        #new_urls.add(link)
-                        #print ("Simple link: ", link, end='\n')
                     elif link.startswith("/"):
                         new_url = urljoin(url, link)
-                        #new_urls.add(combined)
-                        #print ("Combined: ", new_url, end='\n')
                     else:
                         continue
-                    #new_url = "http://hej.com"
-
                     new_url = clean_url(new_url)
-                    #print (new_url)
-                    new_urls.add(new_url)
+
+                    if not is_file(new_url):
+                        new_urls.add(new_url)
             return list(new_urls)
     except Exception as e:
         print ("Something went bad!", e, end='\n')
@@ -93,5 +71,46 @@ def clean_url(url):
         url = url[:url.find("#")]
     return url
 
+def is_file(url):
+    url = url.lower()
+    return any([url.endswith(x) for x in ["jpg", "png", "mp4", "mp3", "wav"]])
+
 if __name__ == '__main__':
-    main()
+    print ("Bot starting!")
+    args = parser.parse_args()
+    url_queue = Queue()
+    for u in args.URLs:
+        url_queue.put(u)
+
+    connection = lite.connect('test.db')
+    try:
+        cursor = connection.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS Data(Id INT PRIMARY KEY, Url TEXT UNIQUE ON CONFLICT IGNORE)")
+
+        lock = Lock()
+        processes = []
+        #with Pool(processes = WORKER_THREADS) as pool:
+        for num in range(WORKER_THREADS):
+            print ("Starting thread: ", num)
+            p = Process(target=process_url, args=(lock, url_queue, num))
+            p.start()
+            processes.append(p)
+            #pool.apply_async(process_url, args=(lock, url_queue, num, connection))
+        while True:
+            i = input("q to quit")
+            if i == 'q':
+                break
+        #pool.close()
+        #pool.join()
+        for p in processes:
+            print ("Alive", p.is_alive())
+            p.terminate() #might cause deadlocks!?
+
+    except lite.Error as e:
+        print ("Error %s:" % e.args[0])
+        sys.exit(1)
+
+    finally:
+        print ("Closing connection")
+        if connection:
+            connection.close()
