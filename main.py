@@ -34,7 +34,7 @@ def process_url(lock, url_queue, t_num):
                 lock.release()
         else:
             print ("No more URLs :( ", t_num)
-            #time.sleep(1)
+            time.sleep(1)
 
 def parse_urls(url):
     print("URL: ", url)
@@ -89,19 +89,15 @@ if __name__ == '__main__':
 
         lock = Lock()
         processes = []
-        #with Pool(processes = WORKER_THREADS) as pool:
         for num in range(WORKER_THREADS):
             print ("Starting thread: ", num)
             p = Process(target=process_url, args=(lock, url_queue, num))
             p.start()
             processes.append(p)
-            #pool.apply_async(process_url, args=(lock, url_queue, num, connection))
         while True:
             i = input("q to quit")
             if i == 'q':
                 break
-        #pool.close()
-        #pool.join()
         for p in processes:
             print ("Alive", p.is_alive())
             p.terminate() #might cause deadlocks!?
